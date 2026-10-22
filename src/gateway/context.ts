@@ -3,6 +3,7 @@ import { createRedis, type Redis } from '../redis/client.js';
 import { type Keys, keys } from '../redis/keys.js';
 import type { GatewayConfig } from '../shared/config.js';
 import { createLogger, type Logger } from '../shared/logger.js';
+import { type CacheHooks, noopCacheHooks } from './cache/hooks.js';
 
 /**
  * Everything a module needs, injected (no module-level singletons) so tests can run several stacks in one
@@ -14,11 +15,13 @@ export interface GatewayContext {
   keys: Keys;
   config: GatewayConfig;
   log: Logger;
+  /** Own-write notifications to the read cache (step 08 replaces the no-op). */
+  cacheHooks: CacheHooks;
 }
 
 export function createContext(
   config: GatewayConfig,
-  opts: { db?: Db; redis?: Redis; log?: Logger } = {},
+  opts: { db?: Db; redis?: Redis; log?: Logger; cacheHooks?: CacheHooks } = {},
 ): GatewayContext {
   return {
     config,
@@ -26,6 +29,7 @@ export function createContext(
     redis: opts.redis ?? createRedis(config.redisUrl),
     keys: keys(config.redisPrefix),
     log: opts.log ?? createLogger('gateway'),
+    cacheHooks: opts.cacheHooks ?? noopCacheHooks,
   };
 }
 

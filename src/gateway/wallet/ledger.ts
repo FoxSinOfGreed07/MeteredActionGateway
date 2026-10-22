@@ -72,17 +72,20 @@ export async function placeHold(
   o: { tenantId: string; actionId: string; amount: number; actionType: string },
 ): Promise<HoldResult> {
   assertPositiveInt(o.amount, 'hold amount');
-  const row = await tx
-    .updateTable('wallets')
-    .set((eb) => ({
-      available: eb('available', '-', o.amount),
-      held: eb('held', '+', o.amount),
-      updated_at: sql`now()`,
-    }))
-    .where('tenant_id', '=', o.tenantId)
-    .where('available', '>=', o.amount)
-    .returning(['available', 'held'])
-    .executeTakeFirst();
+  // One round trip: the conditional UPDATE and the HOLD row in a single statement. The wallet row lock is
+  // held from here to COMMIT, so keeping this to one statement keeps per-tenant admission throughput up.
+  const r = await sql<{ available: number; held: number }>`
+    WITH w AS (
+      UPDATE wallets
+         SET available = available - ${o.amount}, held = held + ${o.amount}, updated_at = now()
+       WHERE tenant_id = ${o.tenantId} AND available >= ${o.amount}
+      RETURNING available, held
+    ), l AS (
+      INSERT INTO ledger_entries (tenant_id, action_id, kind, amount, available_delta, held_delta, reason)
+      SELECT ${o.tenantId}, ${o.actionId}::uuid, 'HOLD', ${o.amount}, ${-o.amount}, ${o.amount}, ${`hold:${o.actionType}`} FROM w
+    )
+    SELECT available, held FROM w`.execute(tx);
+  const row = r.rows[0];
   if (!row) {
     const w = await tx
       .selectFrom('wallets')
@@ -91,14 +94,7 @@ export async function placeHold(
       .executeTakeFirst();
     return { ok: false, available: w?.available ?? 0 };
   }
-  await appendEntry(tx, {
-    tenantId: o.tenantId,
-    actionId: o.actionId,
-    kind: 'HOLD',
-    amount: o.amount,
-    reason: `hold:${o.actionType}`,
-  });
-  return { ok: true, available: row.available, held: row.held };
+  return { ok: true, available: Number(row.available), held: Number(row.held) };
 }
 
 export async function capture(

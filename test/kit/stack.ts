@@ -5,6 +5,7 @@ import type { Db } from '../../src/db/kysely.js';
 import { createApp } from '../../src/gateway/api/app.js';
 import type { AppEnv } from '../../src/gateway/api/types.js';
 import { createContext, type GatewayContext } from '../../src/gateway/context.js';
+import { startWorker, type Worker } from '../../src/gateway/worker.js';
 import { MockAdminClient } from '../../src/mock-erp/admin-client.js';
 import { createMockErp, type MockErpInstance, type RunningMockErp } from '../../src/mock-erp/app.js';
 import type { MockErpOptions } from '../../src/mock-erp/types.js';
@@ -26,6 +27,8 @@ export interface StackOptions {
   seedPrices?: boolean;
   /** Start the mock ERP in-process (port 0). Its webhooks are pointed at this stack's API. */
   mockErp?: false | MockErpOptions;
+  /** Start the worker loops (dispatchers, recovery, expiry; reconciler from step 07) in-process. */
+  worker?: boolean;
 }
 
 export const TEST_WEBHOOK_SECRET = 'test-webhook-secret';
@@ -38,6 +41,13 @@ export interface Stack {
   scale: number;
   api: { url: string; app: Hono<AppEnv>; request: (path: string, init?: RequestInit) => Promise<Response> };
   mockErp?: { url: string; admin: MockAdminClient; instance: MockErpInstance; running: RunningMockErp };
+  worker: {
+    /** Start the worker if it isn't running (restart after a stop = "process came back"). */
+    start(): Promise<void>;
+    /** `abandon: true` simulates a crash: in-flight results are dropped, nothing is settled. */
+    stop(opts?: { abandon?: boolean }): Promise<void>;
+    readonly running: boolean;
+  };
   stop(): Promise<void>;
 }
 
@@ -107,8 +117,25 @@ export async function startStack(opts: StackOptions = {}): Promise<Stack> {
     mock.instance.config.webhook_url = `${url}/v1/webhooks/erp/${firstErpLane?.id ?? 'sap-main'}`;
   }
 
+  let worker: Worker | undefined;
+  const workerHandle: Stack['worker'] = {
+    async start() {
+      worker ??= await startWorker(ctx);
+    },
+    async stop(o) {
+      const w = worker;
+      worker = undefined;
+      await w?.stop(o);
+    },
+    get running() {
+      return worker !== undefined;
+    },
+  };
+  if (opts.worker) await workerHandle.start();
+
   return {
     ctx,
+    worker: workerHandle,
     db: tdb.db,
     redis: tr.redis,
     prefix: tr.prefix,
@@ -116,6 +143,7 @@ export async function startStack(opts: StackOptions = {}): Promise<Stack> {
     api: { url, app, request: (path, init) => Promise.resolve(app.request(path, init)) },
     ...(mock ? { mockErp: mock } : {}),
     async stop() {
+      await workerHandle.stop();
       await mock?.running.close();
       await new Promise<void>((resolve) => {
         const s = server as unknown as { close(cb: () => void): void; closeAllConnections?: () => void };

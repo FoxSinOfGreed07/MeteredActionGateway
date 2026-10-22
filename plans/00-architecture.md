@@ -611,7 +611,7 @@ are built **only** in `src/redis/keys.ts`. Don't use ioredis `keyPrefix`.
 
 **Lua scripts** (`src/redis/lua/*.lua`, loaded with `defineCommand`):
 - `token_bucket(KEYS[1]=rl, ARGV=[rate_per_sec, burst])` → `0` if a token was granted, otherwise the milliseconds to wait. Uses `redis.call('TIME')`.
-- `cooldown_extend(KEYS[1]=cool, ARGV=[until_ms])` → sets `until_ms` with the matching PX, **only if it's later** than the current value.
+- `cooldown_trip(KEYS=[cool, cool429], ARGV=[retry_after_ms|-1, base_ms, max_ms, rand])` → one trip per cooldown window: if a cooldown is already active it returns it unchanged (the other 429s of the same burst don't escalate); otherwise `INCR cool429`, delay = `Retry-After` or `min(max, base·2^(n−1))` with full jitter, `SET cool PX delay`. Returns `{consecutive_429, cooldown_ms}`. (Replaces the planned `cooldown_extend`.)
 - `cache_get(KEYS=[entry,hwm])` → the entry if `entry.seq ≥ hwm`; otherwise deletes the entry and returns nil.
 - `cache_fill(KEYS=[entry,hwm], ARGV=[value_json, seq, fetched_at_ms, ttl_ms])` → `1` stored, `-1` rejected (`seq < hwm`: **stale read**), `-2` rejected (an existing entry has a higher seq).
 - `cache_invalidate(KEYS=[entry,hwm], ARGV=[seq, hwm_ttl_ms])` → raises the HWM if `seq` is higher, and deletes the entry if `entry.seq < seq`. Returns `1` if the entry was deleted. A duplicate or older seq is a no-op.

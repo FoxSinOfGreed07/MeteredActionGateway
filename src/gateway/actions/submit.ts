@@ -151,6 +151,8 @@ export async function submitAction(ctx: GatewayContext, input: SubmitInput): Pro
       return replayOrMismatch(row, payloadHash);
     }
 
+    // Event first, hold LAST: the tenant's wallet row lock is then held only for one statement + COMMIT.
+    await recordInsertEvent(tx, inserted, 'submitted');
     const hold = await placeHold(tx, { tenantId: tenant.id, actionId: id, amount: price.hold, actionType });
     if (!hold.ok) {
       await sql`ROLLBACK TO SAVEPOINT admit`.execute(tx);
@@ -165,7 +167,6 @@ export async function submitAction(ctx: GatewayContext, input: SubmitInput): Pro
         },
       );
     }
-    await recordInsertEvent(tx, inserted, 'submitted');
     return { status: inserted.response_status, body: inserted.response_body, replayed: false };
   });
 

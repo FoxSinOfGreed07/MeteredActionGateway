@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { GatewayError } from '../../../shared/errors.js';
 import type { GatewayContext } from '../../context.js';
+import { queueReport } from '../../ops/queue-report.js';
 import { grant } from '../../wallet/ledger.js';
 import { walletView } from '../../wallet/wallet.js';
 import type { AppEnv } from '../types.js';
@@ -10,6 +11,8 @@ const GrantBody = z.object({ amount: z.number().int().positive(), reason: z.stri
 
 export function opsRoutes(ctx: GatewayContext) {
   const r = new Hono<AppEnv>();
+
+  r.get('/queue', async (c) => c.json(await queueReport(ctx)));
 
   r.post('/tenants/:id/grant', async (c) => {
     const tenantId = c.req.param('id');
