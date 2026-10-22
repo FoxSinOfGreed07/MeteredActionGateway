@@ -1,0 +1,556 @@
+PROMPT:
+
+"""
+I have cleared the first interview round at Limitless AI and I have been given this new task to complete. The task is in a word doc. I need your assistance in first breaking it down and understanding correctly EXACTLY what the task entails along with explanations (not yet a solution discussion, only a problem discussion). 
+They have given certain scenarios that the system has to weather and the successful scenario criteria etc. I want to completely understand what is it that they want.
+
+Break it down for me and let's dissect everything and discuss.
+"""
+
+RESPONSE:
+
+"""
+Congrats on clearing the first round. This is a well-designed challenge, and it rewards reading it very carefully, because much of what they're testing is in the exact wording. Below is the full breakdown, section by section, then the threads that connect everything, and finally the ambiguities you'll need to resolve or state as assumptions.
+
+## The one-paragraph version
+
+You're building a middleware service between AI agents and their customers' accounting systems (ERPs). Most of the challenge comes down to one hard question: **how do you take an action involving real money, in a system you don't control, over a network that can leave you unsure whether it worked, and still bill for it correctly?** Caching, rate limiting, the queue and the LLM step are supporting pieces, and each adds its own correctness traps.
+
+The document also tells you how it's graded. The closing lines are the rubric: *"A correct gateway with three well-argued decisions beats a fast one with none. Cut features before you cut the ledger."* They are scoring judgement and correctness, not feature count. With a 3–4 day timebox, the scope is deliberately too big, and you are expected to cut things.
+
+## Vocabulary, in this context
+
+| Term | What it means here |
+| --- | --- |
+| Tenant | A customer company of Limitless. Each has its own credit wallet and, per Section 1, its own ERP instance. |
+| Agent | An AI agent acting for a tenant. It's the client calling your API. A tenant can have many agents running concurrently. |
+| ERP | The customer's system of record for accounting. SAP is large-enterprise; Tally is very common among Indian SMEs. You don't control it. You can only call it. |
+| Posting a payment against a vendor invoice | Recording that a supplier's bill has been paid. Doing it twice means paying a supplier twice, which is a real financial error. |
+| Vendor master | The master record for a supplier: name, bank details, tax IDs, payment terms. It's read often and changed rarely, sometimes by humans working directly in SAP. |
+| Credits / wallet | Limitless's prepaid billing unit. Every action costs credits. |
+| Ledger | An append-only list of every credit movement. Rows are never edited or deleted; corrections are new rows. |
+| Hold / capture (debit) / release / refund | Hold reserves credits, like a hotel pre-authorising your card. Capture actually charges them. Release cancels a hold. Refund returns credits after a capture. |
+| Idempotency key | A unique ID the client attaches to an intended action, so resubmitting it doesn't perform it twice. |
+| Webhook | The ERP calling you to say "something changed." It can be late, duplicated, out of order, or never arrive. |
+| Sequence number | An always-increasing version number from the ERP that tells you which change is newer. |
+| Staleness budget | The maximum age of data you'll tolerate serving, per object type. You declare it. |
+| Backpressure | When downstream is slow, signalling upstream to slow down instead of buffering forever. |
+| Cache stampede | Many requests miss the cache at the same moment and all hit the origin at once. |
+
+## Section 1: The situation
+
+The opening sentence packs five obligations into one example:
+
+1. Debit the wallet (metering).
+2. Reach SAP exactly once: no double payment and no lost payment.
+3. Update every cached view, so nobody reads "unpaid" after it's paid.
+4. Respect SAP's rate limit, since it's a system you don't own.
+5. Do all of this even if SAP saves the payment and then the connection dies.
+
+**That last clause is the core of the challenge.** From your side, a timeout looks identical whether SAP saved the payment or never received the request. Both naive reactions are dangerous:
+
+- If you retry, you might pay the vendor twice.
+- If you assume failure and refund, the payment may actually exist in SAP. You've then given the tenant a free action, and your records disagree with reality.
+
+There's also a conceptual point interviewers often probe. Strictly speaking, exactly-once delivery over an unreliable network is impossible. What you can achieve is "attempt possibly more than once, but make sure the effect lands only once," usually called effectively-once. Knowing that distinction and using the vocabulary precisely will matter in the review.
+
+A useful framing for the whole problem is that **there are three sources of truth, and they can disagree**:
+
+- SAP owns the truth about invoices and payments.
+- Your ledger owns the truth about money.
+- Your action records own the truth about what the gateway intended and did.
+
+Most of the challenge is about keeping these three consistent when the network, crashes, and stale data push them apart.
+
+Finally, note the phrase "the ERP is a mock with realistic failure modes; the gateway is the thing under test." Don't spend days making the mock sophisticated. But it must reproduce the failures, because without them you can't prove the gateway works. "Realistic" also cuts the other way: if your mock SAP has a capability real SAP or Tally lacks, expect to be asked about it.
+
+## Section 2: The six components
+
+**Action API.** `submit(tenant, action_type, payload, idempotency_key)` returns a *durable action record*, not *the result*. Two things follow from that wording:
+
+- "Durable" means the record is written to persistent storage before you respond.
+- Returning a record rather than an outcome implies the API is asynchronous. You accept the action, persist it, and return it with a status; execution happens later through the queue. The existence of D8 and Scenario 5 confirms this.
+
+The record's lifecycle is the state machine you have to document in the README.
+
+**Wallet.** It has four verbs: hold, debit, refund, and reconcile. "Reconciled against an append-only ledger" means two things:
+
+- Any balance you show must be reproducible by replaying the ledger.
+- You should be able to verify that the ledger agrees with action outcomes. For example, every succeeded action was captured exactly once, and every failed one was released.
+
+**ERP connector and mock.** The four failure modes matter because each tells you something different about whether the write happened:
+
+- **429 (rate limited):** the write definitely didn't happen. Try later.
+- **503 (unavailable):** the write almost certainly wasn't processed. It's retryable.
+- **Timeout after commit:** the write happened, but you can't tell.
+- **Stale read:** the ERP's own answer may be out of date. Even asking SAP "did this happen?" can return a wrong answer. This is the sneakiest one, and the review comes back to it.
+
+The scenarios also require mock capabilities not listed in this bullet:
+
+- Looking up a payment by your reference (Scenario 2).
+- Changing data "via another channel" and emitting webhooks with sequence numbers and a configurable delay (Scenario 6).
+- Returning 429 for a set duration (Scenario 5).
+- Returning permanent validation errors (Scenario 8).
+
+**Read cache.** You declare a staleness budget per object type. For instance, how stale may a vendor's bank details be, compared with an invoice's paid/unpaid status? Invalidation must come from two sources:
+
+- Your own writes, which you know about immediately.
+- Webhooks, which tell you about changes you didn't make.
+
+**Rate limiter and queue.** "Per-ERP" means the limit belongs to the upstream system, not to your gateway. Backpressure means the queue is bounded and pushes back on submitters rather than growing forever. Fairness means one tenant's burst can't make everyone else wait.
+
+There's a puzzle here worth noticing. If each tenant has its own SAP instance, tenants don't share an SAP rate limit, so how could one starve another? It could happen through your shared resources, such as the worker pool and queue. It could also happen if multiple tenants share one ERP endpoint or API quota. Scenario 5's wording suggests the latter. More on this in the ambiguities section.
+
+**LLM classification.** An example: the invoice line "AWS hosting – Sept" gets assigned the expense category "IT Infrastructure." Caching by content hash means identical input text reuses the stored answer instead of calling the LLM again. The reasons are cost, latency, and above all consistency. LLMs can answer the same input differently, and in accounting you don't want the same line categorised one way on Monday and another way on Tuesday. Recording the model and prompt version tells you which cached answers came from which configuration when you upgrade either.
+
+The document doesn't say where this step sits in the action flow, whether it costs credits, or whether you need a real LLM.
+
+## Section 3: The eight decisions
+
+**Format rule:** each entry must state the option you chose, the option you rejected, and the *specific failure* your choice prevents. "A bare answer scores nothing."
+
+There's a small inconsistency in the document. Section 1 says to "argue against the others" (all of them), while Section 3 asks for "the option you rejected" (one). Also, in the review they will "argue for the option you rejected." So your rejected option must be the strongest rival, not a strawman. If you reject something weak, they'll simply argue for one of the options you didn't discuss.
+
+Several decisions are **partly pre-decided by the scenarios**, and your DECISIONS.md must stay consistent with them. I'll flag where.
+
+**D1: making the ERP write happen once.** The options:
+
+- **Idempotency key at the ERP:** you send a unique key and the ERP refuses repeats. This relies on the ERP supporting it.
+- **Own dedupe table:** the gateway records what it has sent. This relies on the gateway's knowledge being enough, but the gateway can't see what the ERP did after a timeout.
+- **Optimistic lock:** "apply this only if the object is still at version N." This is more about conflicting concurrent writes than about duplicates.
+- **Check then write:** ask the ERP whether the payment exists, and write if not. This relies on nothing changing between the check and the write, and on the check being accurate.
+
+This decision touches Scenarios 1, 2 and 3.
+
+**D2: the outcome is unknown after a timeout.** The options:
+
+- **Retry:** relies on repetition being safe.
+- **Assume failure and refund:** relies on a timeout meaning nothing happened.
+- **Mark UNKNOWN and reconcile:** accepts not knowing for a while.
+- **Query the ERP first:** relies on finding the write and getting a current answer.
+
+**Scenario 2 already dictates most of this:** the action is "marked UNKNOWN; gateway queries SAP by reference before any refund or retry." Your judgement shows in the details and in what you argue against.
+
+**D3: where the wallet debit sits.** The options:
+
+- **Debit first, then act:** refund on failure.
+- **Act, then debit:** charge only after success.
+- **Two-phase hold and capture:** reserve, then charge or release.
+- **Saga with compensation:** a chain of steps, each with an undo step.
+
+Notice that Scenarios 4 and 8 are written in hold-and-release language ("rejected at hold time," "hold released"), and Section 2 says "held, debited, refunded." The spec leans one way here, though you still need to argue it.
+
+**D4: the caching pattern for ERP reads.** The options:
+
+- **Cache-aside:** your code checks the cache and loads from the ERP on a miss.
+- **Read-through:** the cache layer loads on a miss itself.
+- **Write-through:** writes pass through the cache to the ERP. This only covers writes that go through you, and Scenario 6 involves a write that doesn't.
+- **No cache, with a short-lived request coalescer:** nothing is stored, but simultaneous identical requests share one call.
+
+A point that's easy to miss: reads consume the same SAP rate limit as writes. Caching isn't only about latency; it protects your write capacity.
+
+**D5: invalidating cached invoice data.** The options:
+
+- **TTL only:** entries expire after a fixed time.
+- **Delete on write:** you remove the entry when you write.
+- **Versioned keys:** each new version gets a new cache key.
+- **Webhook-driven invalidation with a sequence number.**
+
+Section 2 already requires invalidation from both your writes and webhooks, so this decision is about the mechanism, not the sources.
+
+**D6: stampede protection on a hot vendor.** The options:
+
+- **Lock per key:** one request fetches while the others wait.
+- **Probabilistic early refresh:** entries randomly refresh shortly before they expire.
+- **Stale-while-revalidate:** serve the old value while one request refreshes in the background.
+- **Request coalescing:** simultaneous requests share one in-flight fetch.
+
+Scenario 7's wording ("coalesced result or stale value within budget") hints at two of these.
+
+**D7: concurrency control on a tenant's wallet.** The race: the balance is 500, and two holds of 300 each both read 500, both see enough, and both proceed. The balance ends at −100. The options:
+
+- **Redis lock:** a distributed lock held outside the database.
+- **SELECT FOR UPDATE:** lock the database row while you check and write.
+- **Atomic conditional update:** a single statement that subtracts only if enough remains.
+- **Single-writer queue per tenant:** all wallet operations for a tenant run one at a time.
+
+There's a deliberate tension here with Constraint 1, which says balances are derived from the ledger. If there's no single balance row, what do you lock or conditionally update? Notice that before you choose.
+
+**D8: the queue for action execution.** The options:
+
+- **BullMQ:** a Redis-based job queue for Node.
+- **Postgres-backed queue:** jobs live in the same database as your records and ledger.
+- **Kafka:** a partitioned log with replay.
+- **SQS:** a managed AWS queue.
+
+They name the criteria: **ordering** (must actions on the same invoice or tenant run in order?), **retry** (delayed retries with backoff for 429s, handling permanent failures), and **replay** (re-running or auditing from history). One practical consequence: your choice has to start with "one command" on a reviewer's laptop.
+
+## Section 4: The eight scenarios
+
+Each scenario needs an automated test **and** a one-line statement of expected behaviour.
+
+**1. Duplicate submit, 200ms apart.** At 200ms, the second request probably arrives while the first is still executing. So this tests *concurrent* duplicates, not "already finished" duplicates, which is the harder case. You pass with one ERP write, one debit, and identical responses. Open questions:
+
+- Does "identical" mean the same action record, or literally the same response even if the status has changed in between?
+- What if the same key arrives with a *different* payload?
+
+**2. SAP commits, then the connection drops.** The required behaviour is spelled out. "Query SAP by reference" means the gateway must attach an identifier that SAP stores and can search by. You pass with exactly one payment in SAP, the action resolved to success after the query, and credits captured, not refunded. Hidden questions:
+
+- What if the query itself times out?
+- What if it returns a stale "not found"? That's exactly the review's twist.
+
+**3. Two agents pay the same invoice concurrently.** Two different agents means two *different* idempotency keys, so idempotency doesn't help at all. This tests business-level conflicts on the same object, not request duplication. The loser should get a conflict response showing the invoice's current state, such as "already paid." Open questions:
+
+- Where is the conflict detected: the gateway or the ERP?
+- Does the loser's hold get released?
+- What about partial payments, where two half-payments might be legitimate?
+
+**4. Wallet holds 500; two 300-credit actions in parallel.** "Second" just means whichever loses the race. "Rejected at hold time" means rejected at admission, before queuing or calling the ERP. "Never driven negative" means not even for a moment. The underlying concept is available balance = balance − active holds.
+
+**5. 429s for 90 seconds during a burst of 5,000 actions.** This is the operations scenario, with four requirements:
+
+- **Back off:** stop hammering SAP while it's returning 429s.
+- **Visible queue depth:** expose a metric or endpoint.
+- **No action lost:** if your retry cap gives up after, say, 30 seconds, actions die during a 90-second outage. Refusing *new* submissions at the door is backpressure, not loss. Dropping *accepted* actions is loss.
+- **Fairness:** a tenant with 100 actions shouldn't wait behind another tenant's 4,900.
+
+Two more things to notice. You won't want an automated test that literally waits 90 seconds, so think about time control. And all 5,000 actions' credits stay held during the outage.
+
+**6. Vendor master changed in SAP via another channel; the webhook arrives 40 seconds late.** This is the trickiest wording in the document. The timeline is: at T, the change happens in SAP. Your cache doesn't know. At T+40s, the webhook arrives.
+
+Read literally, "stale read after the write is impossible to observe" can't be guaranteed: during those 40 seconds you have no way of knowing the change happened. So you have to state your interpretation. The plausible intended meanings are:
+
+- Once the webhook is processed, nothing older can ever be served again. That includes the classic race where an in-flight cache refill writes the old value back *after* your invalidation.
+- Duplicate or out-of-order webhooks can't roll the cache backwards.
+- The 40-second gap must fall within your declared budget for vendor master data. The 40 seconds was probably chosen deliberately to test that number.
+
+**7. 1,000 agents request the same vendor record at the moment its cache expires.** You pass with one upstream read, with the others served the shared result or a stale value within budget. The wording implies a difference between "expired" and "too old to serve." Hidden questions:
+
+- If you run several gateway processes, is it one read total or one per process?
+- What do the 1,000 receive if that single read fails or gets a 429?
+
+**8. Permanent failure after the hold was placed.** You must distinguish permanent errors (validation; don't retry) from transient ones (429, 503, timeout). The ledger must record three facts: the hold, the release, and the reason. There must be no net charge. One unstated question: if the LLM classification already ran, does that cost anything?
+
+## Section 5: The constraints
+
+**Append-only ledger, derived balances.** You never UPDATE or DELETE ledger rows; mistakes are corrected with new reversing entries. You may keep a fast balance figure, but it must be reproducible from the ledger, and the ledger wins any disagreement.
+
+**Staleness budgets.** Read this carefully: *"No cache value may outlive the write that made it wrong by more than its declared staleness budget."* The clock starts when the write happens in the ERP, not when you hear about it. So for out-of-band changes, webhook delay counts against your budget. Combined with Scenario 6's 40 seconds, this is one of the most important sentences in the document. You must state the budgets as explicit numbers per object type.
+
+**LLM determinism at the boundary.** The LLM itself may vary its answers, but your gateway's behaviour must not: the same content returns the same stored answer. Each stored answer records the model and prompt version. It's ambiguous whether the version is part of the cache key or only recorded alongside the answer.
+
+**Durable record before the ERP call; crashes must be recoverable.** Consider a crash after the record is written but around the time of the call. On restart, you don't know whether the call went out. **That's the same uncertainty as a timeout.** Crash recovery and Scenario 2 are the same problem in different forms.
+
+## Section 6: Deliverables
+
+- **A runnable repo with one command** that starts the mock ERP, the gateway, and seed data (tenants, wallets, vendors, invoices). Reviewers will run it, so it must work on a fresh machine.
+- **DECISIONS.md** covering D1 to D8.
+- **Automated tests** for all eight scenarios.
+- **A failure-injection script plus a reconciliation run** you can trigger on demand. You'll use these live in the review.
+- **A one-page README** covering how to run it, the action state machine (states and transitions), and what you cut. "What you cut" is explicitly asked for, so honesty about scope is part of the grade, not an admission of weakness.
+
+## Section 7: The review, and what each part probes
+
+**Walk one action end-to-end with a forced timeout after commit.** This is a live demo of your failure injection and reconciliation. You'll need to narrate every state transition fluently.
+
+**Defend two decisions while they argue the other side.** This tests whether you understand the trade-offs or just picked something. It's why your rejected options must be strong ones.
+
+**The ERP starts returning stale reads for 10 minutes.** They want to know what changes in the cache, the wallet, and reconciliation. It probes several things:
+
+- Can stale data poison your cache by overwriting newer data with older?
+- Would reconciliation trust a stale "payment not found," leading to a wrongful refund or retry and therefore a double payment?
+- What happens to holds on UNKNOWN actions during that window?
+
+"We change one thing live" might be literal. They may want to flip it in your running system, so a configurable stale-read mode in the mock would let you show the effect rather than just describe it.
+
+**When should this be one Postgres table and no Redis?** "Answer with a number, not a feeling" means a threshold, such as actions per second or tenants, below which Postgres alone is enough. That implies you should know your system's throughput, ideally from measurement. It's also a signal that Redis isn't mandatory: a well-argued Postgres-only design is a legitimate answer.
+
+## Threads that connect everything
+
+**The "unknown outcome" problem appears three times:** the timeout after commit (Scenario 2), the crash between record and call (Constraint 4), and stale reads making the ERP's own answers unreliable (review question 3). If you see these as one problem, your design will be coherent.
+
+**There are three different kinds of duplicates:**
+
+- The same request resubmitted with the same key (Scenario 1).
+- The gateway itself retrying after uncertainty (Scenario 2).
+- Two different intents targeting the same object with different keys (Scenario 3).
+
+Each needs a different defence.
+
+**Holds and time interact.** Credits stay locked while actions wait in a queue (Scenario 5) or sit in UNKNOWN (Scenario 2). Wallet behaviour isn't independent of queue and failure behaviour.
+
+**Reads and writes compete for the same SAP rate limit.** Caching decisions affect write throughput.
+
+**Time appears everywhere:** 200ms, 40 seconds, 90 seconds, 10 minutes. Automated tests need a way to control time, or they'll be slow and flaky.
+
+## Ambiguities to resolve or state as assumptions
+
+You can either ask the Limitless team (many take-homes welcome this, and a good question signals seniority) or state your assumption explicitly in the README or DECISIONS.md.
+
+- **Tech stack.** No language or framework is specified. BullMQ in D8 hints at Node/TypeScript, but nothing says it's required.
+- **ERP topology.** Does each tenant have its own SAP instance with its own rate limit, or do tenants share an endpoint or quota? This changes what "fairness" means in Scenario 5.
+- **Single or multiple gateway instances.** This determines whether "one upstream read" in Scenario 7 and your locking choices need to work across processes.
+- **Which operations cost credits.** Do reads? Does the LLM step? What does each action type cost? You'll likely invent the pricing.
+- **Idempotency edge cases.** What happens with the same key but a different payload, and what does "identical responses" mean if state has moved on?
+- **Partial payments.** Can an invoice legitimately receive more than one payment? This changes what counts as a conflict in Scenario 3.
+- **Scenario 6's guarantee.** You need your own precise statement of what "impossible to observe" means, given that the late webhook makes the literal reading unachievable.
+- **Webhook guarantees from the mock.** Can webhooks be lost entirely, or only delayed, duplicated, or reordered?
+- **A real LLM or a stub.** Is a deterministic fake acceptable for the classification step?
+- **Hold lifetime.** What happens to a hold on an action stuck in UNKNOWN for hours?
+
+Where would you like to go next: drill deeper into any one scenario or decision, or turn the ambiguity list into a short, well-phrased clarification email to the team before you start building?
+
+"""
+
+PROMPT:
+
+"""
+Nope, I need to submit this within 48 hours
+"""
+
+RESPONSE:
+
+"""
+Got it. The document says "Timebox: 3–4 days," but your real deadline is 48 hours, which changes things. (If that mismatch surprises you, it might be worth one quick line to the recruiter to confirm, but plan on 48.) Realistically, with sleep, that's about 28–32 working hours, so prioritising is now the main skill being tested.
+
+**What changes in how to read the challenge**
+
+The document already tells you what to protect: *"Cut features before you cut the ledger"* and *"A correct gateway with three well-argued decisions beats a fast one with none."* With 48 hours, take those literally. A smaller system that is clearly correct, with an honest "what I cut" section, will beat a sprawling one with gaps.
+
+One point to keep: DECISIONS.md still needs all eight entries, because "a bare answer scores nothing." But you can go deep on three or four and keep the rest short and precise. Choose your deep ones carefully, since they'll ask you to defend two.
+
+**Sorting the work by what's graded**
+
+The core you can't cut is everything the live review exercises:
+
+- the action record and state machine
+- a durable record written before the ERP call
+- the wallet with hold, capture and release on an append-only ledger
+- a mock ERP that can time out after commit
+- UNKNOWN status plus reconciliation, and the failure-injection script
+- the one-command startup
+
+Scenarios 1, 2, 3, 4 and 8 all sit on this core, so building it gets you five of the eight tests.
+
+The next tier is the queue and rate limiter (Scenario 5) and the cache with sequence-number invalidation and stampede protection (Scenarios 6 and 7). These need working implementations and tests, but they can be simpler. For example, Scenario 5's test can run on a scaled-down or controllable clock instead of waiting a real 90 seconds.
+
+The cheapest tier is the LLM classification step. Notice that **no scenario tests it**; only Constraint 3 mentions it. A stub classifier with a content-hash cache that records model and prompt version satisfies the constraint at minimal cost. Sophisticated fairness and dashboards also belong here; a queue-depth endpoint is enough for "visible."
+
+**A rough shape for the 48 hours**
+
+1. **First 2–3 hours:** write down your assumptions and get the one-command skeleton running (mock ERP, gateway, seed data). Don't wait for answers to clarification questions. State the assumptions in the README and move on.
+2. **Next ~12 hours:** build the core and the tests for Scenarios 1, 2, 3, 4 and 8. Draft each DECISIONS.md entry as you make the decision; reconstructing your reasoning at the end is slower and reads worse.
+3. **Next ~8–10 hours:** queue, rate limiter and cache, with tests for 5, 6 and 7. Then the LLM stub.
+4. **Last ~5–6 hours:** finish DECISIONS.md, write the one-page README with the state machine and "what I cut," and do a fresh-clone test of the one-command startup. Then rehearse the forced-timeout walkthrough once out loud.
+
+Also keep in mind that every extra piece of infrastructure (Redis, Kafka, a cloud emulator) costs setup and debugging time. That's worth weighing when we reach D7 and D8. The review's "when is a single Postgres table enough?" question suggests a lean stack is a defensible choice, not a shortcut.
+
+What language and stack are you most fluent in? That's the biggest lever on your 48 hours, and it's the first thing to settle before we move to the solution discussion.
+"""
+
+PROMPT:
+
+"""
+Before I read this response, I'll complete going through your initial report
+"""
+
+RESPONSE:
+
+"""
+Sounds good, take your time. As you read, jot down anything that feels unclear or that you'd want to push back on, and we can go through those first when you're back.
+"""
+
+PROMPT:
+
+"""
+I have gone through this. Let's now break things down. What are the separate parts in this. 
+
+* mock erp
+* credit management system
+* unit / e2e tests
+* etc
+
+and so on and then let's go through the decisions and make them. Which one and why and let's argue the pros and cons and what tradeoffs are we deciding to make. Then we can make a complete implementation plan later. For now, let's just break it down into separate systems / components that we need to architect each with their own decisions. Once the components are clear, we can go through each one by one. Once that is done, then we can finalize the implementation doc.
+"""
+
+RESPONSE:
+
+"""
+Here is what each component is responsible for, which decisions it owns, and which scenarios it answers to. Decisions labelled D1–D8 come from the document. Everything else is a decision the document doesn't name, but you'll still have to make it.
+
+## Foundations (decide first)
+
+This covers four things:
+
+- your language and framework
+- which datastore or datastores you use, including whether Redis exists at all
+- the process topology: one gateway process or several, and whether the API and workers share a process
+- how the one-command startup works
+
+These go first because several D-options only exist depending on them. "Redis lock" in D7 and "BullMQ" in D8 both require Redis. "Lock per key" and "request coalescing" in D6 mean very different things in one process than across several. The review question about "a single Postgres table and no Redis" also lives here.
+
+## Write path
+
+**Intake API.** This is the front door: submit, status, and the read endpoints agents use for lookups. On submit it validates the request, dedupes on the idempotency key, prices the action, places the hold, writes the durable record, enqueues the action, and returns the record.
+
+Decisions:
+- the scope and lifetime of idempotency keys
+- what happens when the same key arrives with a different payload
+- what "identical responses" actually returns
+- whether reads are metered
+- what a submitter receives when backpressure kicks in
+
+Scenarios: 1, 4 and 5.
+
+**Action store and state machine.** This holds the durable record, the states and legal transitions, and the invariant that no ERP call happens without a record.
+
+Decisions:
+- the state set and transitions
+- how wallet movements bind to state transitions (shared with D3)
+- where Scenario 3's same-invoice conflict gets detected
+
+Scenarios: 2, 3 and 8, plus Constraint 4 and the README's state-machine deliverable. Most of the state machine is a combination of D1–D3, so it's easiest to draw after those are decided.
+
+**Wallet and ledger.** This covers hold, capture, release and refund, the append-only ledger, and the derived balance (available = balance − active holds). It also covers pricing and an integrity check that replays the ledger.
+
+Decisions:
+- D3 and D7
+- how the balance is derived, which is where the tension with D7 lives: if there's no balance row, what do you lock or conditionally update?
+- pricing per action type
+- whether holds expire
+
+Scenarios: 4 and 8, and it's touched by 1 and 2.
+
+**Queue and workers.** These pick up accepted actions, run them through the connector, and retry them.
+
+Decisions:
+- D8
+- what ordering you guarantee
+- your retry and backoff policy, and how it fits with "no action lost"
+- the fairness scheme
+- worker concurrency
+- what happens to a job whose worker crashes mid-run
+- how queue depth is exposed
+
+Scenario: 5. The other write scenarios also pass through it.
+
+## Outbound and background
+
+**Rate limiter.** This is shared by the write path and by read-path cache misses, which is why it sits outside the write lane.
+
+Decisions:
+- the algorithm
+- the scope: per ERP instance, or a shared quota across tenants (the open ambiguity)
+- how it reacts to a 429, including any Retry-After header
+- whether reads and writes share one budget or split it
+- where its state lives, which depends on Foundations
+
+Scenarios: 5 and 7.
+
+**ERP connector.** This is the adapter between the gateway and the ERP. It attaches your reference or idempotency key, applies timeouts, supports lookup by reference, and classifies every response into an outcome class: success, retryable, permanent, or unknown.
+
+Decisions:
+- D1
+- the outcome taxonomy, the most underrated decision in the system, because every other component acts on this classification and a wrong mapping spreads everywhere
+- timeout values
+- the reference scheme
+
+Scenarios: 1, 2, 3, 5 and 8.
+
+**Reconciler.** This resolves UNKNOWN actions, recovers in-flight actions after a restart, and runs a consistency sweep between the wallet and action outcomes.
+
+Decisions:
+- D2
+- when it runs: immediately after a timeout, on a periodic sweep, or both
+- how far to trust a "not found" answer
+- what happens if the lookup itself fails
+- the maximum time an action can stay UNKNOWN
+- what happens to holds in the meantime
+- the recovery rule for each state after a crash
+
+Scenario: 2. It's also the centre of review questions 1 and 3, and of the failure-injection deliverable.
+
+**LLM classifier.** This classifies invoice lines and caches the results by content hash.
+
+Decisions:
+- a real LLM or a stub
+- whether the model and prompt version are part of the cache key or only recorded alongside the result
+- where it sits in the action flow
+- whether it's metered
+- what happens when the LLM is unavailable
+
+It's governed only by Constraint 3; no scenario tests it.
+
+## Read path
+
+**Read cache.** This serves ERP lookups within declared staleness budgets.
+
+Decisions:
+- D4, D5 and D6
+- the actual budget numbers per object type
+- where the cache lives (in-process or shared, which depends on Foundations)
+- the difference between "expired" and "too stale to serve"
+- invalidation on your own writes
+
+Scenarios: 6 and 7.
+
+**Webhook intake.** This receives change events from the ERP, dedupes them, tracks the latest sequence number, and triggers invalidation.
+
+Decisions:
+- whether you track sequence numbers per object or globally
+- how you handle out-of-order and duplicate webhooks
+- what happens when a webhook never arrives
+- whether it also feeds the reconciler
+- signature verification, which is a likely cut
+
+Scenario: 6. It's small enough to fold into the cache, but it has its own failure modes, so it's worth reasoning about separately.
+
+## Outside the gateway
+
+**Mock ERP, plus the failure-injection script.** This is a separate service. It needs:
+
+- data with version or sequence numbers
+- endpoints to post a payment, read an invoice or vendor, look up a payment by reference, and simulate an out-of-band change
+- a webhook emitter with configurable delay
+- the failure modes: timeout-after-commit, 429 windows, 503s, stale-read windows and validation errors
+- an inspection endpoint so tests can count writes
+
+Decisions:
+- whether it honours idempotency keys or optimistic locks. This directly determines which D1 options are even available to you, and it's where the realism question will come up.
+- how stale reads are modelled
+- the control surface for failure injection: admin endpoints or configuration
+- whether it behaves more like SAP or more like Tally
+
+**Test harness.** This covers the eight scenario tests plus unit tests.
+
+Decisions:
+- the test level for each scenario: in-process, or against the running stack
+- time control for the 40-second and 90-second scenarios
+- how to generate real concurrency, such as 1,000 simultaneous requests or duplicates 200ms apart
+- how assertions work, via the mock's inspection endpoint and ledger queries
+
+## Decisions that span components
+
+A few decisions don't belong to any single box:
+
+- **Admission atomicity.** The hold, the durable record and the enqueue must succeed or fail together. How hard that is depends on whether they share a datastore, which ties Intake, Wallet, Action store and Queue back to Foundations.
+- **D1** spans the connector (dedupe at the ERP), the mock ERP (what it supports) and intake (dedupe at the API).
+- **D3** spans the wallet and the state machine.
+- **Scenario 3** spans the state machine, the connector and the mock ERP.
+
+## Suggested order for going through them
+
+1. **Foundations**, because they constrain everything else.
+2. **Mock ERP contract and connector (D1).** What the ERP can and can't do limits your D1 and D2 options.
+3. **Reconciler (D2).**
+4. **Wallet and ledger (D3, D7).**
+5. **State machine**, assembled from D1–D3.
+6. **Intake API**, including admission atomicity.
+7. **Queue, workers and rate limiter (D8).**
+8. **Read cache and webhook intake (D4–D6).**
+9. **LLM classifier and test harness**, which should be quick.
+
+Given your 48 hours, steps 2–5 deserve the most discussion time, since they're the core the review exercises.
+
+If this split matches how you see it, let's start with Foundations: which language and stack are you most fluent in?
+"""
