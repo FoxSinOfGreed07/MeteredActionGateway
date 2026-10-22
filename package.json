@@ -1,0 +1,54 @@
+{
+  "name": "metered-action-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.28.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev:api": "tsx watch src/gateway/api-main.ts",
+    "dev:worker": "tsx watch src/gateway/worker-main.ts",
+    "dev:mock-erp": "tsx watch src/mock-erp/main.ts",
+    "migrate": "tsx scripts/migrate.ts",
+    "seed": "tsx scripts/seed.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:scenarios": "vitest run --project scenarios",
+    "test:realtime": "SCENARIO_TIME_SCALE=1 vitest run --project scenarios",
+    "fault": "tsx scripts/inject-fault.ts",
+    "reconcile": "tsx scripts/reconcile.ts",
+    "demo:timeout": "tsx scripts/demo-timeout.ts",
+    "bench:pg": "tsx scripts/bench-pg-queue.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.5",
+    "@hono/zod-validator": "^0.9.1",
+    "hono": "^4.13.13",
+    "ioredis": "^6.0.0",
+    "kysely": "^0.29.7",
+    "pg": "^8.23.1",
+    "pino": "^10.4.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.2",
+    "@types/node": "^22.20.5",
+    "@types/pg": "^8.23.1",
+    "pino-pretty": "^13.2.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "undici": "^8.12.3",
+    "vitest": "^5.0.5"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}

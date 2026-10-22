@@ -3,7 +3,7 @@
 Update after every step: tick the boxes, add notes, commit. `git log` should show one commit per step.
 
 ## Steps
-- [ ] **01 Foundation**: compose up works; migration and seed; test kit; typecheck, lint and test green
+- [x] **01 Foundation**: compose up works; migration and seed; test kit; typecheck, lint and test green
 - [ ] **02 Mock ERP**: routes; faults (429, 503, latency, drop before/after commit, timeout after commit, 500 after commit, stale reads); webhooks; stats; tests
 - [ ] **03 Ledger and wallet**: grant/hold/capture/release; append-only; verify; S4 at domain level
 - [ ] **04 Actions and intake**: state machine and trigger; registry; admission transaction; API; S1/S3/S4 at submit level
@@ -33,7 +33,12 @@ _none yet_
 
 ## Blockers / deviations
 <!-- what, why, the smallest deviation taken, the DEVIATION comment location -->
-_none yet_
+- **Node 22 locally** (v22.21.1): `engines` is `>=22`; the Docker image stays on `node:24-slim`. No Node-24-only APIs.
+- **Toolchain majors installed:** TypeScript 7, vitest 5 (`test.projects`), zod 4, ioredis 6, kysely 0.29, @hono/node-server 2, Biome 2.6. `packageManager` is pinned to `pnpm@10.28.0` (corepack in the image otherwise pulls a newer pnpm that rejects ignored build scripts); esbuild is allow-listed via `pnpm.onlyBuiltDependencies`.
+- **`schema_migrations`:** created `IF NOT EXISTS` in 0001 (the runner bootstraps it too). The architecture doc was updated to match.
+- **numeric → number parser:** registered OID 1700 → number (SUM over bigint returns numeric), in addition to int8 → number.
+- **Test tenants:** the fixture defaults to a fresh company code (`X…`) because `tenants` is unique per (lane, company). The **mock ERP must create companies on demand** (handled in step 02).
 
 ## Notes
 <!-- timings, flaky tests fixed, anything the next session should know -->
+- 01: `docker compose up --build` → migrate exits 0 with the tenant table; `/healthz` 200; `down -v` + up works; re-running the seed doesn't double-grant.

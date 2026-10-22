@@ -1,0 +1,7 @@
+node_modules
+.git
+coverage
+dist
+*.docx
+first_main_chat.txt
+LLM_CHAT.txt

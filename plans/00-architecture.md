@@ -353,7 +353,7 @@ CREATE TRIGGER actions_guard BEFORE INSERT OR UPDATE ON actions
 CREATE TRIGGER actions_no_delete BEFORE DELETE ON actions
   FOR EACH ROW EXECUTE FUNCTION forbid_mutation();
 
-CREATE TABLE schema_migrations (version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS schema_migrations (version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now());
 ```
 
 `src/db/schema.ts` holds the hand-written Kysely `Database` interface, mirroring this DDL column for column.

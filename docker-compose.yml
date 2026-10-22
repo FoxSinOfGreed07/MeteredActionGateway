@@ -1,0 +1,82 @@
+# One command: `docker compose up --build`
+#   postgres + redis → migrate (migrations + seed, exits 0) → mock-erp, api, worker
+x-gateway-env: &gateway-env
+  DATABASE_URL: postgres://gateway:gateway@postgres:5432/gateway
+  REDIS_URL: redis://redis:6379
+  REDIS_PREFIX: "mag:"
+  LOG_LEVEL: info
+  OPS_API_KEY: ops-dev-key
+  MOCK_ERP_URL: http://mock-erp:4000
+  WEBHOOK_SECRET: dev-webhook-secret
+  LLM_PROVIDER: ${LLM_PROVIDER:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  LLM_MODEL: ${LLM_MODEL:-claude-opus-5}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: gateway
+      POSTGRES_DB: gateway
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway -d gateway"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    # Persistence is OFF on purpose (D8 principle): Redis holds nothing whose loss could lose an action or
+    # money — only cache entries, rate-limit tokens and coalescing leases. Losing them makes us slower, never wrong.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  migrate:
+    build: .
+    command: sh -c "pnpm exec tsx scripts/migrate.ts && pnpm exec tsx scripts/seed.ts"
+    environment: *gateway-env
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  mock-erp:
+    build: .
+    command: pnpm exec tsx src/mock-erp/main.ts
+    environment:
+      MOCK_ERP_PORT: "4000"
+      MOCK_ERP_WEBHOOK_URL: http://api:3000/v1/webhooks/erp/sap-main
+      MOCK_ERP_WEBHOOK_SECRET: dev-webhook-secret
+      MOCK_ERP_WEBHOOK_DELAY_MS: "500"
+      MOCK_ERP_RATE_LIMIT_RPS: "100"
+      MOCK_ERP_RATE_LIMIT_BURST: "100"
+      MOCK_ERP_SEED: "42"
+      LOG_LEVEL: info
+    ports: ["4000:4000"]
+
+  api:
+    build: .
+    command: pnpm exec tsx src/gateway/api-main.ts
+    environment:
+      <<: *gateway-env
+      PORT: "3000"
+    ports: ["3000:3000"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+      mock-erp: { condition: service_started }
+
+  worker:
+    build: .
+    command: pnpm exec tsx src/gateway/worker-main.ts
+    environment: *gateway-env
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+      mock-erp: { condition: service_started }
