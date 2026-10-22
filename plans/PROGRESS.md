@@ -7,7 +7,7 @@ Update after every step: tick the boxes, add notes, commit. `git log` should sho
 - [x] **02 Mock ERP**: routes; faults (429, 503, latency, drop before/after commit, timeout after commit, 500 after commit, stale reads); webhooks; stats; tests
 - [x] **03 Ledger and wallet**: grant/hold/capture/release; append-only; verify; S4 at domain level
 - [x] **04 Actions and intake**: state machine and trigger; registry; admission transaction; API; S1/S3/S4 at submit level
-- [ ] **05 ERP connector**: taxonomy unit tests; integration tests per fault
+- [x] **05 ERP connector**: taxonomy unit tests; integration tests per fault
 - [ ] **06 Dispatcher**: fair claim; token bucket; cooldown and probe; settle with fencing; recovery; expiry; ops queue; **S1, S3, S5, S8**
 - [ ] **07 Reconciler**: resolver; trust rule; witness; lane health; scripts (fault, reconcile, demo); **S2**, crash, abandoned commit, stale window
 - [ ] **08 Read cache**: Lua scripts; read-through; webhooks; coalescing; **S6, S7**
@@ -41,6 +41,7 @@ _none yet_
 
 ## Notes
 <!-- timings, flaky tests fixed, anything the next session should know -->
+- 05: outcome unit tests + connector integration tests against every mock fault. `PostPaymentResult.payment/invoice` are nullable: a 2xx with an unreadable body is still `committed` (trust the status), so the executor must tolerate missing data. Note: fetch's "bad ports" (e.g. 9) fail as `bad port` → unclassified/ambiguous; tests use a genuinely closed port for `unreachable`.
 - 04: state machine (6) and intake (11) tests green. Replies always echo the stored jsonb `response_body` (the first caller gets the value RETURNED by the insert), so the first response and replays serialize identically. `transition()` uses a row lock (`SELECT … FOR UPDATE`) + UPDATE: same CAS semantics as the single-statement form, and gives the exact `from_state` for the event.
 - 03: ledger (8 tests) and wallet concurrency (3 tests: S4 domain level, 50-way stress, interleaving) green. Seed and test fixtures use `grant()`; no writes to ledger/wallets outside `src/gateway/wallet/`.
 - 02: 18 mock tests (the 16 planned + companies-on-demand + seed determinism). Added admin `GET …/invoices` (list/get) for the demo and tests; recorded in 00-architecture §9.

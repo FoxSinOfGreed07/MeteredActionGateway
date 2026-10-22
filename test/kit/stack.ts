@@ -89,7 +89,7 @@ export async function startStack(opts: StackOptions = {}): Promise<Stack> {
     const withDefaults: LaneInput = { ...LANE_DEFAULT_DURATIONS[kind], ...lane, kind };
     await createLane(tdb.db, {
       ...scaleLane(withDefaults, scale),
-      base_url: lane.base_url ?? (kind === 'erp' ? (mock?.url ?? 'http://127.0.0.1:9') : null),
+      base_url: lane.base_url ?? (kind === 'erp' ? (mock?.url ?? 'http://127.0.0.1:65530') : null),
       webhook_secret: lane.webhook_secret ?? (kind === 'erp' ? TEST_WEBHOOK_SECRET : null),
     });
   }
