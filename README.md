@@ -4,9 +4,9 @@ A gateway that sits between AI agents and customers' ERPs (a SAP-style mock here
 against a credit wallet, **reaches the ERP effectively once**, respects the ERP's **rate limit** fairly across
 tenants, and reports exactly what happened, even when the ERP times out *after* committing.
 
-> **Status: in progress.** Steps 01–06 of [`plans/`](plans/README.md) are built: foundation, mock ERP, ledger
-> and wallet, intake API, ERP connector, dispatcher. Next are the reconciler for `UNKNOWN` actions (07), the
-> read cache and webhooks (08), LLM classification (09), and the final docs (10–11). Progress is tracked in
+> **Status: in progress.** Steps 01–07 of [`plans/`](plans/README.md) are built: foundation, mock ERP, ledger
+> and wallet, intake API, ERP connector, dispatcher, reconciler. Next are the read cache and webhooks (08),
+> LLM classification (09), and the final docs (10–11). Progress is tracked in
 > [`plans/PROGRESS.md`](plans/PROGRESS.md).
 
 ## Run it
@@ -52,8 +52,22 @@ submit ──▶ QUEUED (hold placed, same transaction as the record) ──clai
                                                                                       └─ timeout/reset/5xx ▶ UNKNOWN (hold kept; never resent blindly)
 ```
 
-`UNKNOWN` actions are resolved by looking up the payment by reference (the action id). That's step 07; until
-it lands, they stay `UNKNOWN` with their hold intact.
+`UNKNOWN` actions are resolved by the reconciler, which looks the payment up by reference (the action id).
+"Found" is trusted at once (capture). "Not found" is trusted only when the ERP's read view is provably fresh:
+after `request_timeout + max_read_lag`, with no stale-read evidence on the lane, and with one of our own later
+payments visible in the same view. Only then is the action re-sent with the same reference.
+
+## Failure injection and reconciliation
+
+```bash
+pnpm demo:timeout                       # the review walkthrough: forced timeout after commit, end to end
+pnpm fault timeout-after-commit         # next payment commits in SAP, then the response never arrives
+pnpm fault drop-before-commit           # connection reset, nothing committed (→ trusted not-found → re-sent)
+pnpm fault 429 --duration 90s           # SAP rate-limits payments for 90 s
+pnpm fault stale-reads --lag 10m --duration 10m
+pnpm fault list | clear
+pnpm reconcile                          # resolve UNKNOWN actions now + verify ledger invariants (exit 1 on drift)
+```
 
 ## Tests
 
@@ -68,17 +82,18 @@ pnpm test:realtime        # scenarios with the doc's real durations (slow)
 | Scenario | Expected behaviour | Test |
 |---|---|---|
 | 1 | Same key twice, 200 ms apart → one ERP write, one debit, identical responses | `test/scenarios/s1-duplicate-submit.test.ts` |
+| 2 | SAP commits, then the connection drops → UNKNOWN; query SAP by reference before any refund or retry; no double payment | `test/scenarios/s2-timeout-after-commit.test.ts` (+ `x-abandoned-commit`, `x-crash-recovery`, `x-stale-window`) |
 | 3 | Two agents pay the same invoice → exactly one succeeds; the other gets a conflict with the current state | `test/scenarios/s3-concurrent-invoice.test.ts` |
 | 4 | 500 credits, two 300-credit actions in parallel → second rejected at hold time, never negative | `test/integration/intake.test.ts`, `wallet-concurrency.test.ts` (end-to-end file in step 10) |
 | 5 | 429s for 90 s during 5,000 actions → backs off, depth visible, nothing lost, fair across tenants | `test/scenarios/s5-rate-limit-storm.test.ts` |
 | 8 | Permanent validation failure after the hold → hold released with reason; no net charge | `test/scenarios/s8-permanent-failure.test.ts` |
-| 2, 6, 7 | Timeout after commit; late webhook; cache stampede | steps 07–08 |
+| 6, 7 | Late webhook; cache stampede | step 08 |
 
 ## Repository layout
 
 | Path | What's there |
 |---|---|
-| `src/gateway/` | API (`api/`), intake + state machine (`actions/`), ledger (`wallet/`), ERP connector (`erp/`), dispatcher (`dispatch/`), worker |
+| `src/gateway/` | API (`api/`), intake + state machine (`actions/`), ledger (`wallet/`), ERP connector (`erp/`), dispatcher (`dispatch/`), reconciler (`reconcile/`), worker |
 | `src/mock-erp/` | The mock SAP-style ERP: faults, stale reads, webhooks, admin API |
 | `migrations/` | Postgres schema (append-only ledger, guarded state machine) |
 | `test/` | `unit/`, `integration/`, `scenarios/`, and the in-process test stack in `kit/` |

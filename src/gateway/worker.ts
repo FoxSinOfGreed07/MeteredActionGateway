@@ -4,6 +4,7 @@ import { LaneDispatcher } from './dispatch/dispatcher.js';
 import { expireQueued } from './dispatch/expiry.js';
 import { loadLanes } from './dispatch/lanes.js';
 import { recoverExpiredLeases } from './dispatch/recovery.js';
+import { reconcilePass } from './reconcile/resolver.js';
 
 export interface Worker {
   dispatchers: LaneDispatcher[];
@@ -46,6 +47,7 @@ export async function startWorker(
   const loops = [
     every(ctx, 'recovery', ctx.config.recovery.intervalMs, () => recoverExpiredLeases(ctx), stop.signal),
     every(ctx, 'expiry', ctx.config.expiry.intervalMs, () => expireQueued(ctx), stop.signal),
+    every(ctx, 'reconciler', ctx.config.reconciler.intervalMs, () => reconcilePass(ctx, owner), stop.signal),
   ];
   if (opts.logDepthEveryMs) {
     loops.push(

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { GatewayError } from '../../../shared/errors.js';
 import type { GatewayContext } from '../../context.js';
 import { queueReport } from '../../ops/queue-report.js';
+import { reconcileOnce } from '../../reconcile/run-once.js';
 import { grant } from '../../wallet/ledger.js';
 import { walletView } from '../../wallet/wallet.js';
 import type { AppEnv } from '../types.js';
@@ -13,6 +14,11 @@ export function opsRoutes(ctx: GatewayContext) {
   const r = new Hono<AppEnv>();
 
   r.get('/queue', async (c) => c.json(await queueReport(ctx)));
+
+  r.post('/reconcile', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { force?: unknown };
+    return c.json(await reconcileOnce(ctx, { force: body.force === true }));
+  });
 
   r.post('/tenants/:id/grant', async (c) => {
     const tenantId = c.req.param('id');
