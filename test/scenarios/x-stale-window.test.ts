@@ -84,9 +84,11 @@ describe('stale reads for 10 minutes with an UNKNOWN pending (witness available)
       report.lanes.find((l: { lane_id: string }) => l.lane_id === 'sap-main').stale_suspected_until,
     ).not.toBeNull();
 
-    // The window ends (in production the quarantine expires on its own).
+    // The window ends. In production the quarantine expires on its own and the next scheduled lookup (≤
+    // backoffMax away) resolves it; an operator can end it early and run `pnpm reconcile` — as here.
     await admin.removeFault(staleId);
     await clearLaneHealth(stack.db, 'sap-main');
+    expect((await opsClient(stack).reconcile(true)).status).toBe(200);
     const done = await waitForState(stack, unknown.id, 'SUCCEEDED', 30_000);
     expect(done.confirmed_via).toBe('reconcile');
     expect(await admin.primaryPayments(t.companyCode, { invoice_id: t.invoiceIds[0]! })).toHaveLength(1);
@@ -117,6 +119,7 @@ describe('stale-suspected lane, no witness available', () => {
     expect((await ledgerOf(stack, unknown.id)).map((l) => l.kind)).toEqual(['HOLD']);
 
     await clearLaneHealth(stack.db, 'sap-main');
+    expect((await opsClient(stack).reconcile(true)).status).toBe(200); // operator: `pnpm reconcile`
     const done = await waitForState(stack, unknown.id, 'SUCCEEDED', 30_000);
     expect(done.confirmed_via).toBe('response'); // re-dispatched after a trusted not-found
     expect(await admin.primaryPayments(t.companyCode, { invoice_id: t.invoiceIds[0]! })).toHaveLength(1);

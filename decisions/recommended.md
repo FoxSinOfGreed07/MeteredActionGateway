@@ -168,7 +168,7 @@ The **budget** is the longest any value may be served after the ERP write that m
   - The `wallets` row is a *projection*: the sum of ledger deltas, stored for O(1) checks and as the one row everyone serializes on.
   - It's updated in the same transaction as every ledger row.
   - Reconciliation proves `projection == SUM(ledger)`. If the two ever disagree, the ledger wins and the projection is rebuilt.
-- **Trade-off accepted:** one hot row per tenant. Each hold holds that row only for a single statement, which is fine at throughput bounded by the ERP.
+- **Trade-off accepted:** one hot row per tenant. As built, the hold is one statement (a CTE doing the conditional `UPDATE` and the `HOLD` insert), and the event is written before it, so the row lock spans that statement plus the commit. Measured: ~330 submits/s for a single tenant, ~1,250/s across 5 tenants. That's well above what one tenant's ERP lane accepts.
 - **Pushback → answer:** *"FOR UPDATE is explicit and flexible."* It holds the row lock across round trips to the application. With 4,000 submits from one tenant, those round trips queue up one after another. Its correctness also depends on every code path remembering `FOR UPDATE`.
 - **Implemented in:** step 03.
 
@@ -244,6 +244,7 @@ Same format. A1–A3 are foundations. A4–A8 are execution. A9–A12 are admiss
   - A Redis **token bucket** per lane (a Lua script using Redis's own clock), set to the lane's configured rate and burst.
   - On a `429`: a lane **cooldown** that honours `Retry-After`, otherwise exponential backoff from 1 s up to 30 s with jitter.
   - Then a single **probe** request (half-open) before full traffic resumes.
+  - As built: **one trip per cooldown window**. While a cooldown is active, further 429s from the same burst of in-flight requests don't escalate the backoff exponent.
 - **Rejected:** an in-process limiter in each worker.
 - **Failure prevented:** N worker processes each sending at the full limit (N× the ERP's quota), and, during a 429 window, every worker hammering the ERP. Scenario 5's "backs off" is checked by counting the 429s the mock actually served.
 - **Why the other options lose:**

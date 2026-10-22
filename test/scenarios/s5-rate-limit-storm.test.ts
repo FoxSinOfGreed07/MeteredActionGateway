@@ -115,4 +115,9 @@ it('S5: 429 for 90 s during 5,000 actions → backs off, depth visible, nothing 
   const lastRank = (tenant: string) => order.map((r) => r.tenant_id).lastIndexOf(tenant) + 1;
   expect(lastRank('tenant_b')).toBeLessThanOrEqual(1800);
   expect(lastRank('tenant_c')).toBeLessThanOrEqual(1800);
+
+  console.info(
+    `[S5] outage ${OUTAGE} ms · 429s served ${stats.rate_limited_429} · payments ${stats.payments_created} · ` +
+      `last completion rank: A ${lastRank('tenant_a')}, B ${lastRank('tenant_b')}, C ${lastRank('tenant_c')} of 5000`,
+  );
 });

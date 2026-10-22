@@ -101,7 +101,7 @@ pnpm test:realtime        # scenarios with the doc's real durations (slow)
 | 1 | Same key twice, 200 ms apart → one ERP write, one debit, identical responses | `test/scenarios/s1-duplicate-submit.test.ts` |
 | 2 | SAP commits, then the connection drops → UNKNOWN; query SAP by reference before any refund or retry; no double payment | `test/scenarios/s2-timeout-after-commit.test.ts` (+ `x-abandoned-commit`, `x-crash-recovery`, `x-stale-window`) |
 | 3 | Two agents pay the same invoice → exactly one succeeds; the other gets a conflict with the current state | `test/scenarios/s3-concurrent-invoice.test.ts` |
-| 4 | 500 credits, two 300-credit actions in parallel → second rejected at hold time, never negative | `test/integration/intake.test.ts`, `wallet-concurrency.test.ts` (end-to-end file in step 10) |
+| 4 | 500 credits, two 300-credit actions in parallel → second rejected at hold time, never negative | `test/scenarios/s4-wallet-race.test.ts` |
 | 5 | 429s for 90 s during 5,000 actions → backs off, depth visible, nothing lost, fair across tenants | `test/scenarios/s5-rate-limit-storm.test.ts` |
 | 8 | Permanent validation failure after the hold → hold released with reason; no net charge | `test/scenarios/s8-permanent-failure.test.ts` |
 | 6 | Vendor changed in SAP; webhook 40 s late → invalidated by seq; nothing older than it is observable afterwards; within budget before | `test/scenarios/s6-late-webhook.test.ts` |
