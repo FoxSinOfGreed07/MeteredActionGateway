@@ -539,6 +539,8 @@ WebhookEvent = { event_id, company_code, object_type: 'vendor'|'invoice'|'paymen
 | `PATCH /__admin/companies/:cc/vendors/:id?webhook_delay_ms=` | A change "via another channel": merge fields, seq+1, schedule a webhook (with an optional per-event delay) |
 | `POST /__admin/companies/:cc/invoices` `{count, amount_minor?, vendor_id?}` | Bulk-create OPEN invoices → `{invoice_ids}` |
 | `GET /__admin/companies/:cc/payments?reference=&invoice_id=` | **Primary** (non-stale) payment listing, used by test assertions |
+| `GET /__admin/companies/:cc/invoices?status=&limit=` / `GET /__admin/companies/:cc/invoices/:id` | Primary invoice listing / read (the demo and tests use it to find an OPEN invoice and its open amount) |
+| (companies) | Unknown company codes are **created on demand** (25 vendors, 0 invoices), so tests can use fresh tenants |
 | `GET /__admin/config` / `PUT /__admin/config` | `{ webhook_url, webhook_secret, webhook_delay_ms, webhooks_enabled, rate_limit_rps, rate_limit_burst }` |
 
 **FaultRule**

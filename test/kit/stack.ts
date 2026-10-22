@@ -4,6 +4,9 @@ import type { Hono } from 'hono';
 import type { Db } from '../../src/db/kysely.js';
 import { createApp } from '../../src/gateway/api/app.js';
 import { createContext, type GatewayContext } from '../../src/gateway/context.js';
+import { MockAdminClient } from '../../src/mock-erp/admin-client.js';
+import { createMockErp, type MockErpInstance, type RunningMockErp } from '../../src/mock-erp/app.js';
+import type { MockErpOptions } from '../../src/mock-erp/types.js';
 import type { Redis } from '../../src/redis/client.js';
 import { type DeepPartial, type GatewayConfig, loadConfig, scaleDurations } from '../../src/shared/config.js';
 import { createLogger } from '../../src/shared/logger.js';
@@ -20,7 +23,11 @@ export interface StackOptions {
   /** Lane rows (unscaled ms). Default: sap-main + llm. base_url defaults to the mock ERP (when started). */
   lanes?: LaneInput[];
   seedPrices?: boolean;
+  /** Start the mock ERP in-process (port 0). Its webhooks are pointed at this stack's API. */
+  mockErp?: false | MockErpOptions;
 }
+
+export const TEST_WEBHOOK_SECRET = 'test-webhook-secret';
 
 export interface Stack {
   ctx: GatewayContext;
@@ -29,6 +36,7 @@ export interface Stack {
   prefix: string;
   scale: number;
   api: { url: string; app: Hono; request: (path: string, init?: RequestInit) => Promise<Response> };
+  mockErp?: { url: string; admin: MockAdminClient; instance: MockErpInstance; running: RunningMockErp };
   stop(): Promise<void>;
 }
 
@@ -64,13 +72,24 @@ export async function startStack(opts: StackOptions = {}): Promise<Stack> {
   config.redisPrefix = tr.prefix;
   const ctx = createContext(config, { db: tdb.db, redis: tr.redis, log: createLogger('test') });
 
+  let mock: Stack['mockErp'];
+  if (opts.mockErp) {
+    const instance = createMockErp({
+      ...opts.mockErp,
+      config: { webhook_secret: TEST_WEBHOOK_SECRET, ...opts.mockErp.config },
+    });
+    const running = await instance.start(0, '127.0.0.1');
+    mock = { url: running.url, admin: new MockAdminClient(running.url), instance, running };
+  }
+
   if (opts.seedPrices !== false) await seedPriceList(tdb.db);
   for (const lane of opts.lanes ?? defaultLanes()) {
     const kind = lane.kind ?? (lane.id === 'llm' ? 'llm' : 'erp');
     const withDefaults: LaneInput = { ...LANE_DEFAULT_DURATIONS[kind], ...lane, kind };
     await createLane(tdb.db, {
       ...scaleLane(withDefaults, scale),
-      base_url: lane.base_url ?? (kind === 'erp' ? 'http://127.0.0.1:9' : null),
+      base_url: lane.base_url ?? (kind === 'erp' ? (mock?.url ?? 'http://127.0.0.1:9') : null),
+      webhook_secret: lane.webhook_secret ?? (kind === 'erp' ? TEST_WEBHOOK_SECRET : null),
     });
   }
 
@@ -80,6 +99,12 @@ export async function startStack(opts: StackOptions = {}): Promise<Stack> {
   });
   const port = (server.address() as AddressInfo).port;
   const url = `http://127.0.0.1:${port}`;
+  if (mock && opts.mockErp && !opts.mockErp.config?.webhook_url) {
+    const firstErpLane = (opts.lanes ?? defaultLanes()).find(
+      (l) => (l.kind ?? 'erp') === 'erp' && l.id !== 'llm',
+    );
+    mock.instance.config.webhook_url = `${url}/v1/webhooks/erp/${firstErpLane?.id ?? 'sap-main'}`;
+  }
 
   return {
     ctx,
@@ -88,7 +113,9 @@ export async function startStack(opts: StackOptions = {}): Promise<Stack> {
     prefix: tr.prefix,
     scale,
     api: { url, app, request: (path, init) => Promise.resolve(app.request(path, init)) },
+    ...(mock ? { mockErp: mock } : {}),
     async stop() {
+      await mock?.running.close();
       await new Promise<void>((resolve) => {
         const s = server as unknown as { close(cb: () => void): void; closeAllConnections?: () => void };
         s.closeAllConnections?.();
