@@ -56,7 +56,7 @@ in the background.
    1. Read the step file completely. Check its "Depends on" steps are ticked in `PROGRESS.md`.
    2. Implement the deliverables. Follow `00-architecture.md` names **exactly**.
    3. Run `pnpm typecheck && pnpm lint && pnpm test`. Postgres and Redis must be up: `docker compose up -d postgres redis`. **All** tests must be green, including those from earlier steps.
-   4. Tick the step's checklist in `PROGRESS.md` and record anything notable under *Notes*.
+   4. Tick the step's checklist in `PROGRESS.md` and record anything notable under *Notes*. Keep the root `README.md` status line and scenario table current (step 11 turns it into the final one-page README).
    5. Commit with the message `step NN: <title>`, ending with the attribution trailer your harness requires.
 3. **Never weaken an invariant** (§13) or a test assertion to get green. If a test is flaky, fix the cause.
 4. **Decisions are fixed for the implementer.**
