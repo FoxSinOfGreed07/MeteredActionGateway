@@ -3,6 +3,7 @@ import { type ServerType, serve } from '@hono/node-server';
 import type { Hono } from 'hono';
 import type { Db } from '../../src/db/kysely.js';
 import { createApp } from '../../src/gateway/api/app.js';
+import type { AppEnv } from '../../src/gateway/api/types.js';
 import { createContext, type GatewayContext } from '../../src/gateway/context.js';
 import { MockAdminClient } from '../../src/mock-erp/admin-client.js';
 import { createMockErp, type MockErpInstance, type RunningMockErp } from '../../src/mock-erp/app.js';
@@ -35,7 +36,7 @@ export interface Stack {
   redis: Redis;
   prefix: string;
   scale: number;
-  api: { url: string; app: Hono; request: (path: string, init?: RequestInit) => Promise<Response> };
+  api: { url: string; app: Hono<AppEnv>; request: (path: string, init?: RequestInit) => Promise<Response> };
   mockErp?: { url: string; admin: MockAdminClient; instance: MockErpInstance; running: RunningMockErp };
   stop(): Promise<void>;
 }

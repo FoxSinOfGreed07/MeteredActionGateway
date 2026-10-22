@@ -6,7 +6,7 @@ Update after every step: tick the boxes, add notes, commit. `git log` should sho
 - [x] **01 Foundation**: compose up works; migration and seed; test kit; typecheck, lint and test green
 - [x] **02 Mock ERP**: routes; faults (429, 503, latency, drop before/after commit, timeout after commit, 500 after commit, stale reads); webhooks; stats; tests
 - [x] **03 Ledger and wallet**: grant/hold/capture/release; append-only; verify; S4 at domain level
-- [ ] **04 Actions and intake**: state machine and trigger; registry; admission transaction; API; S1/S3/S4 at submit level
+- [x] **04 Actions and intake**: state machine and trigger; registry; admission transaction; API; S1/S3/S4 at submit level
 - [ ] **05 ERP connector**: taxonomy unit tests; integration tests per fault
 - [ ] **06 Dispatcher**: fair claim; token bucket; cooldown and probe; settle with fencing; recovery; expiry; ops queue; **S1, S3, S5, S8**
 - [ ] **07 Reconciler**: resolver; trust rule; witness; lane health; scripts (fault, reconcile, demo); **S2**, crash, abandoned commit, stale window
@@ -41,6 +41,7 @@ _none yet_
 
 ## Notes
 <!-- timings, flaky tests fixed, anything the next session should know -->
+- 04: state machine (6) and intake (11) tests green. Replies always echo the stored jsonb `response_body` (the first caller gets the value RETURNED by the insert), so the first response and replays serialize identically. `transition()` uses a row lock (`SELECT … FOR UPDATE`) + UPDATE: same CAS semantics as the single-statement form, and gives the exact `from_state` for the event.
 - 03: ledger (8 tests) and wallet concurrency (3 tests: S4 domain level, 50-way stress, interleaving) green. Seed and test fixtures use `grant()`; no writes to ledger/wallets outside `src/gateway/wallet/`.
 - 02: 18 mock tests (the 16 planned + companies-on-demand + seed determinism). Added admin `GET …/invoices` (list/get) for the demo and tests; recorded in 00-architecture §9.
 - 01: `docker compose up --build` → migrate exits 0 with the tenant table; `/healthz` 200; `down -v` + up works; re-running the seed doesn't double-grant.

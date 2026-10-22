@@ -7,7 +7,8 @@ export interface ApiResponse<T = any> {
   body: T;
 }
 
-async function call<T>(
+// biome-ignore lint/suspicious/noExplicitAny: test responses are asserted structurally
+async function call<T = any>(
   stack: Stack,
   path: string,
   init: RequestInit & { viaHttp?: boolean } = {},
