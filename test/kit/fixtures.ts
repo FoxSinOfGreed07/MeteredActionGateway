@@ -1,8 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import type { Insertable } from 'kysely';
-import { sql } from 'kysely';
 import type { Db } from '../../src/db/kysely.js';
-import type { LanesTable } from '../../src/db/schema.js';
+import { json } from '../../src/db/kysely.js';
+import type { ActionState, LanesTable } from '../../src/db/schema.js';
+import { grant } from '../../src/gateway/wallet/ledger.js';
 import { sha256Hex } from '../../src/shared/hash.js';
 
 export const DEFAULT_PRICES = [
@@ -81,24 +82,41 @@ export async function createTenant(
       .execute();
     await tx.insertInto('wallets').values({ tenant_id: id }).execute();
     const credits = opts.credits ?? 0;
-    if (credits > 0) {
-      await tx
-        .insertInto('ledger_entries')
-        .values({
-          tenant_id: id,
-          kind: 'GRANT',
-          amount: credits,
-          available_delta: credits,
-          held_delta: 0,
-          reason: 'grant:test',
-        })
-        .execute();
-      await tx
-        .updateTable('wallets')
-        .set({ available: sql`available + ${credits}` })
-        .where('tenant_id', '=', id)
-        .execute();
-    }
+    if (credits > 0) await grant(tx, { tenantId: id, amount: credits, reason: 'test' });
   });
   return { id, apiKey, companyCode, laneId };
+}
+
+/**
+ * A minimal `actions` row for tests that run before/without the intake path (ledger tests need an action
+ * id for the FK). Fills NOT NULL columns with dummies.
+ */
+export async function insertBareAction(
+  db: Db,
+  o: {
+    tenantId: string;
+    holdAmount: number;
+    state?: Extract<ActionState, 'QUEUED' | 'REJECTED'>;
+    laneId?: string;
+    actionType?: string;
+  },
+): Promise<string> {
+  const id = crypto.randomUUID();
+  await db
+    .insertInto('actions')
+    .values({
+      id,
+      tenant_id: o.tenantId,
+      lane_id: o.laneId ?? 'sap-main',
+      action_type: o.actionType ?? 'pay_invoice',
+      idempotency_key: `bare-${id}`,
+      payload: json({}),
+      payload_hash: 'bare',
+      state: o.state ?? 'QUEUED',
+      hold_amount: o.holdAmount,
+      response_status: 202,
+      response_body: json({ bare: true }),
+    })
+    .execute();
+  return id;
 }

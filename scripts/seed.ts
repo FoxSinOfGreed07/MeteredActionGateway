@@ -1,5 +1,5 @@
-import { sql } from 'kysely';
 import { createDb } from '../src/db/kysely.js';
+import { grant } from '../src/gateway/wallet/ledger.js';
 import { loadEnv } from '../src/shared/config.js';
 import { sha256Hex } from '../src/shared/hash.js';
 
@@ -99,25 +99,7 @@ for (const t of TENANTS) {
       .where('kind', '=', 'GRANT')
       .limit(1)
       .executeTakeFirst();
-    if (!granted) {
-      // Step 03 replaces this inline block with ledger.grant().
-      await tx
-        .insertInto('ledger_entries')
-        .values({
-          tenant_id: t.id,
-          kind: 'GRANT',
-          amount: t.credits,
-          available_delta: t.credits,
-          held_delta: 0,
-          reason: 'grant:seed',
-        })
-        .execute();
-      await tx
-        .updateTable('wallets')
-        .set({ available: sql`available + ${t.credits}`, updated_at: sql`now()` })
-        .where('tenant_id', '=', t.id)
-        .execute();
-    }
+    if (!granted) await grant(tx, { tenantId: t.id, amount: t.credits, reason: 'seed' });
   });
 }
 
