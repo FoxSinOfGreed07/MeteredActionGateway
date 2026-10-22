@@ -5,6 +5,8 @@ import type { Db } from '../../src/db/kysely.js';
 import { createApp } from '../../src/gateway/api/app.js';
 import type { AppEnv } from '../../src/gateway/api/types.js';
 import { createContext, type GatewayContext } from '../../src/gateway/context.js';
+import type { Classifier } from '../../src/gateway/llm/classifier.js';
+import { FakeClassifier } from '../../src/gateway/llm/fake-classifier.js';
 import { startWorker, type Worker } from '../../src/gateway/worker.js';
 import { MockAdminClient } from '../../src/mock-erp/admin-client.js';
 import { createMockErp, type MockErpInstance, type RunningMockErp } from '../../src/mock-erp/app.js';
@@ -27,8 +29,10 @@ export interface StackOptions {
   seedPrices?: boolean;
   /** Start the mock ERP in-process (port 0). Its webhooks are pointed at this stack's API. */
   mockErp?: false | MockErpOptions;
-  /** Start the worker loops (dispatchers, recovery, expiry; reconciler from step 07) in-process. */
+  /** Start the worker loops (dispatchers, recovery, expiry, reconciler) in-process. */
   worker?: boolean;
+  /** Inject a classifier (tests always use a FakeClassifier; default: a fresh one). */
+  classifier?: Classifier;
 }
 
 export const TEST_WEBHOOK_SECRET = 'test-webhook-secret';
@@ -81,7 +85,12 @@ export async function startStack(opts: StackOptions = {}): Promise<Stack> {
   const config = scaleDurations(loadConfig(opts.config), scale);
   config.databaseUrl = tdb.url;
   config.redisPrefix = tr.prefix;
-  const ctx = createContext(config, { db: tdb.db, redis: tr.redis, log: createLogger('test') });
+  const ctx = createContext(config, {
+    db: tdb.db,
+    redis: tr.redis,
+    log: createLogger('test'),
+    classifier: opts.classifier ?? new FakeClassifier(), // tests never call a real LLM (A14)
+  });
 
   let mock: Stack['mockErp'];
   if (opts.mockErp) {

@@ -1,0 +1,8 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`LLM prompt versioning > the prompt text is pinned to its version 1`] = `
+{
+  "sha256": "faf2640e3ffd2479f7c12d194a6053094a7204ed5d5981c6f8f866b5a229d7a3",
+  "version": "invoice-line-v1",
+}
+`;

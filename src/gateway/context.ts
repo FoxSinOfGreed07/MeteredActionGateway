@@ -4,6 +4,7 @@ import { type Keys, keys } from '../redis/keys.js';
 import type { GatewayConfig } from '../shared/config.js';
 import { createLogger, type Logger } from '../shared/logger.js';
 import { type CacheHooks, createCacheHooks } from './cache/hooks.js';
+import { type Classifier, createClassifier } from './llm/classifier.js';
 
 /**
  * Everything a module needs, injected (no module-level singletons) so tests can run several stacks in one
@@ -17,11 +18,13 @@ export interface GatewayContext {
   log: Logger;
   /** Own-write notifications to the read cache (step 08 replaces the no-op). */
   cacheHooks: CacheHooks;
+  /** LLM classifier (A14): the deterministic fake unless configured for Claude. */
+  classifier: Classifier;
 }
 
 export function createContext(
   config: GatewayConfig,
-  opts: { db?: Db; redis?: Redis; log?: Logger; cacheHooks?: CacheHooks } = {},
+  opts: { db?: Db; redis?: Redis; log?: Logger; cacheHooks?: CacheHooks; classifier?: Classifier } = {},
 ): GatewayContext {
   const redis = opts.redis ?? createRedis(config.redisUrl);
   const k = keys(config.redisPrefix);
@@ -32,6 +35,7 @@ export function createContext(
     keys: k,
     log: opts.log ?? createLogger('gateway'),
     cacheHooks: opts.cacheHooks ?? createCacheHooks({ redis, keys: k, config }),
+    classifier: opts.classifier ?? createClassifier(config),
   };
 }
 

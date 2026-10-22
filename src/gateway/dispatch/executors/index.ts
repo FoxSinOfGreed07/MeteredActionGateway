@@ -1,5 +1,6 @@
 import type { ActionRow, LaneRow, TenantRow } from '../../../db/schema.js';
 import type { GatewayContext } from '../../context.js';
+import { executeClassifyInvoiceLine } from './classify-invoice-line.js';
 import { executePayInvoice } from './pay-invoice.js';
 
 export interface ExecArgs {
@@ -20,7 +21,10 @@ export interface ExecArgs {
  */
 export type Executor = (a: ExecArgs) => Promise<void>;
 
-const EXECUTORS = new Map<string, Executor>([['pay_invoice', executePayInvoice]]);
+const EXECUTORS = new Map<string, Executor>([
+  ['pay_invoice', executePayInvoice],
+  ['classify_invoice_line', executeClassifyInvoiceLine],
+]);
 
 export function registerExecutor(actionType: string, fn: Executor): void {
   EXECUTORS.set(actionType, fn);

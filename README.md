@@ -4,9 +4,9 @@ A gateway that sits between AI agents and customers' ERPs (a SAP-style mock here
 against a credit wallet, **reaches the ERP effectively once**, respects the ERP's **rate limit** fairly across
 tenants, and reports exactly what happened, even when the ERP times out *after* committing.
 
-> **Status: in progress.** Steps 01–08 of [`plans/`](plans/README.md) are built: foundation, mock ERP, ledger
-> and wallet, intake API, ERP connector, dispatcher, reconciler, read cache and webhooks. Next are LLM
-> classification (09) and the final docs (10–11). Progress is tracked in
+> **Status: in progress.** Steps 01–09 of [`plans/`](plans/README.md) are built: foundation, mock ERP, ledger
+> and wallet, intake API, ERP connector, dispatcher, reconciler, read cache and webhooks, LLM classification.
+> Next are the scenario-suite hardening (10) and the final docs (11). Progress is tracked in
 > [`plans/PROGRESS.md`](plans/PROGRESS.md).
 
 ## Run it
@@ -38,6 +38,18 @@ curl -s localhost:3000/v1/wallet       -H 'Authorization: Bearer acme-dev-key'  
 curl -s localhost:3000/v1/ops/queue    -H 'Authorization: Bearer ops-dev-key'    # queue depth, cooldown per lane
 curl -s localhost:3000/v1/erp/vendors/V-0001 -H 'Authorization: Bearer acme-dev-key'  # cached ERP read (meta.source, seq, age)
 ```
+
+Classify an invoice line (an LLM step, cached by content hash; a repeat costs 2 credits instead of 20):
+
+```bash
+curl -s -X POST localhost:3000/v1/actions \
+  -H 'Authorization: Bearer acme-dev-key' -H 'Idempotency-Key: cls-1' -H 'content-type: application/json' \
+  -d '{"action_type":"classify_invoice_line","payload":{"description":"AWS hosting - Sept"}}'
+```
+
+By default this uses a deterministic fake classifier. Set `ANTHROPIC_API_KEY` (and optionally `LLM_MODEL`) to
+use Claude. Either way, the cache key includes the tenant, the normalized content, the model and the prompt
+version, and every stored answer records them.
 
 Cached reads honour a declared staleness budget per object type: vendor 60 s, invoice 15 s, payment lookups
 never cached. Webhooks with per-object sequence numbers invalidate entries early, and nothing older than the
@@ -99,7 +111,7 @@ pnpm test:realtime        # scenarios with the doc's real durations (slow)
 
 | Path | What's there |
 |---|---|
-| `src/gateway/` | API (`api/`), intake + state machine (`actions/`), ledger (`wallet/`), ERP connector (`erp/`), dispatcher (`dispatch/`), reconciler (`reconcile/`), read cache + webhooks (`cache/`), worker |
+| `src/gateway/` | API (`api/`), intake + state machine (`actions/`), ledger (`wallet/`), ERP connector (`erp/`), dispatcher (`dispatch/`), reconciler (`reconcile/`), read cache + webhooks (`cache/`), LLM classifier (`llm/`), worker |
 | `src/mock-erp/` | The mock SAP-style ERP: faults, stale reads, webhooks, admin API |
 | `migrations/` | Postgres schema (append-only ledger, guarded state machine) |
 | `test/` | `unit/`, `integration/`, `scenarios/`, and the in-process test stack in `kit/` |
