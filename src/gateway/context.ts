@@ -3,7 +3,7 @@ import { createRedis, type Redis } from '../redis/client.js';
 import { type Keys, keys } from '../redis/keys.js';
 import type { GatewayConfig } from '../shared/config.js';
 import { createLogger, type Logger } from '../shared/logger.js';
-import { type CacheHooks, noopCacheHooks } from './cache/hooks.js';
+import { type CacheHooks, createCacheHooks } from './cache/hooks.js';
 
 /**
  * Everything a module needs, injected (no module-level singletons) so tests can run several stacks in one
@@ -23,13 +23,15 @@ export function createContext(
   config: GatewayConfig,
   opts: { db?: Db; redis?: Redis; log?: Logger; cacheHooks?: CacheHooks } = {},
 ): GatewayContext {
+  const redis = opts.redis ?? createRedis(config.redisUrl);
+  const k = keys(config.redisPrefix);
   return {
     config,
     db: opts.db ?? createDb(config.databaseUrl),
-    redis: opts.redis ?? createRedis(config.redisUrl),
-    keys: keys(config.redisPrefix),
+    redis,
+    keys: k,
     log: opts.log ?? createLogger('gateway'),
-    cacheHooks: opts.cacheHooks ?? noopCacheHooks,
+    cacheHooks: opts.cacheHooks ?? createCacheHooks({ redis, keys: k, config }),
   };
 }
 

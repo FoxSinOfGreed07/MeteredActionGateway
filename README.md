@@ -4,9 +4,9 @@ A gateway that sits between AI agents and customers' ERPs (a SAP-style mock here
 against a credit wallet, **reaches the ERP effectively once**, respects the ERP's **rate limit** fairly across
 tenants, and reports exactly what happened, even when the ERP times out *after* committing.
 
-> **Status: in progress.** Steps 01–07 of [`plans/`](plans/README.md) are built: foundation, mock ERP, ledger
-> and wallet, intake API, ERP connector, dispatcher, reconciler. Next are the read cache and webhooks (08),
-> LLM classification (09), and the final docs (10–11). Progress is tracked in
+> **Status: in progress.** Steps 01–08 of [`plans/`](plans/README.md) are built: foundation, mock ERP, ledger
+> and wallet, intake API, ERP connector, dispatcher, reconciler, read cache and webhooks. Next are LLM
+> classification (09) and the final docs (10–11). Progress is tracked in
 > [`plans/PROGRESS.md`](plans/PROGRESS.md).
 
 ## Run it
@@ -36,7 +36,12 @@ curl -s -X POST localhost:3000/v1/actions \
 curl -s localhost:3000/v1/actions/<id> -H 'Authorization: Bearer acme-dev-key'   # state, events, ledger
 curl -s localhost:3000/v1/wallet       -H 'Authorization: Bearer acme-dev-key'   # available / held, derived from the ledger
 curl -s localhost:3000/v1/ops/queue    -H 'Authorization: Bearer ops-dev-key'    # queue depth, cooldown per lane
+curl -s localhost:3000/v1/erp/vendors/V-0001 -H 'Authorization: Bearer acme-dev-key'  # cached ERP read (meta.source, seq, age)
 ```
+
+Cached reads honour a declared staleness budget per object type: vendor 60 s, invoice 15 s, payment lookups
+never cached. Webhooks with per-object sequence numbers invalidate entries early, and nothing older than the
+highest known sequence is ever served or stored. Concurrent misses are coalesced into a single ERP read.
 
 Resubmitting with the same `Idempotency-Key` returns the identical stored response (with
 `Idempotent-Replayed: true`). The same key with a different body gets a `422`.
@@ -87,13 +92,14 @@ pnpm test:realtime        # scenarios with the doc's real durations (slow)
 | 4 | 500 credits, two 300-credit actions in parallel → second rejected at hold time, never negative | `test/integration/intake.test.ts`, `wallet-concurrency.test.ts` (end-to-end file in step 10) |
 | 5 | 429s for 90 s during 5,000 actions → backs off, depth visible, nothing lost, fair across tenants | `test/scenarios/s5-rate-limit-storm.test.ts` |
 | 8 | Permanent validation failure after the hold → hold released with reason; no net charge | `test/scenarios/s8-permanent-failure.test.ts` |
-| 6, 7 | Late webhook; cache stampede | step 08 |
+| 6 | Vendor changed in SAP; webhook 40 s late → invalidated by seq; nothing older than it is observable afterwards; within budget before | `test/scenarios/s6-late-webhook.test.ts` |
+| 7 | 1,000 agents hit an expired vendor at once → one upstream read, everyone else served the coalesced result | `test/scenarios/s7-stampede.test.ts` |
 
 ## Repository layout
 
 | Path | What's there |
 |---|---|
-| `src/gateway/` | API (`api/`), intake + state machine (`actions/`), ledger (`wallet/`), ERP connector (`erp/`), dispatcher (`dispatch/`), reconciler (`reconcile/`), worker |
+| `src/gateway/` | API (`api/`), intake + state machine (`actions/`), ledger (`wallet/`), ERP connector (`erp/`), dispatcher (`dispatch/`), reconciler (`reconcile/`), read cache + webhooks (`cache/`), worker |
 | `src/mock-erp/` | The mock SAP-style ERP: faults, stale reads, webhooks, admin API |
 | `migrations/` | Postgres schema (append-only ledger, guarded state machine) |
 | `test/` | `unit/`, `integration/`, `scenarios/`, and the in-process test stack in `kit/` |

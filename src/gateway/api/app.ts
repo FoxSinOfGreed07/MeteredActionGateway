@@ -5,8 +5,10 @@ import { opsAuth, tenantAuth } from './middleware/auth.js';
 import { notFound, onError } from './middleware/error.js';
 import { requestId } from './middleware/request-id.js';
 import { actionRoutes } from './routes/actions.js';
+import { erpReadRoutes } from './routes/erp-reads.js';
 import { opsRoutes } from './routes/ops.js';
 import { walletRoutes } from './routes/wallet.js';
+import { webhookRoutes } from './routes/webhooks.js';
 import type { AppEnv } from './types.js';
 
 export function createApp(ctx: GatewayContext): Hono<AppEnv> {
@@ -34,10 +36,13 @@ export function createApp(ctx: GatewayContext): Hono<AppEnv> {
   app.use('/v1/actions', auth);
   app.use('/v1/wallet/*', auth);
   app.use('/v1/wallet', auth);
+  app.use('/v1/erp/*', auth);
   app.use('/v1/ops/*', opsAuth(ctx));
 
   app.route('/v1/actions', actionRoutes(ctx));
   app.route('/v1/wallet', walletRoutes(ctx));
   app.route('/v1/ops', opsRoutes(ctx));
+  app.route('/v1/erp', erpReadRoutes(ctx));
+  app.route('/v1/webhooks', webhookRoutes(ctx)); // authenticated by HMAC, not tenant keys
   return app;
 }
